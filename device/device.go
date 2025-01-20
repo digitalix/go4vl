@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync/atomic"
 	sys "syscall"
 
 	"github.com/vladimirvivien/go4vl/v4l2"
@@ -20,7 +21,7 @@ type Device struct {
 	cropCap       v4l2.CropCapability
 	buffers       [][]byte
 	requestedBuf  v4l2.RequestBuffers
-	streaming     bool
+	streaming     atomic.Bool
 	output        chan []byte
 	context       context.Context
 	cancelContext context.CancelFunc
@@ -117,12 +118,12 @@ func Open(path string, options ...Option) (*Device, error) {
 }
 
 func (d *Device) Streaming() bool {
-	return d.streaming
+	return d.streaming.Load()
 }
 
 // Close closes the underlying device associated with `d` .
 func (d *Device) Close() error {
-	if d.streaming {
+	if d.streaming.Load() {
 		if err := d.Stop(); err != nil {
 			return err
 		}
@@ -339,7 +340,7 @@ func (d *Device) Start(ctx context.Context) error {
 		return fmt.Errorf("device: start stream: %s", v4l2.ErrorUnsupportedFeature)
 	}
 
-	if d.streaming {
+	if d.streaming.Load() {
 		return fmt.Errorf("device: stream already started")
 	}
 
@@ -357,7 +358,7 @@ func (d *Device) Start(ctx context.Context) error {
 		return fmt.Errorf("device: make mapped buffers: %s", err)
 	}
 
-	d.streaming = true
+	d.streaming.Store(true)
 
 	if err := d.startStreamLoop(d.context); err != nil {
 		return fmt.Errorf("device: start stream loop: %s", err)
@@ -367,14 +368,10 @@ func (d *Device) Start(ctx context.Context) error {
 }
 
 func (d *Device) Stop() error {
-	if !d.streaming {
-		return nil
-	}
 	if err := d.stopStreamLoop(); err != nil {
 		return fmt.Errorf("device: stop: %w", err)
 	}
-	d.streaming = false
-	d.cancelContext()
+
 	return nil
 }
 
@@ -413,6 +410,10 @@ func (d *Device) startStreamLoop(ctx context.Context) error {
 					if errors.Is(err, sys.EAGAIN) {
 						continue
 					}
+					if !d.streaming.Load() {
+						return
+					}
+
 					fmt.Printf("(Panic) device: stream loop dequeue: %s\n", err)
 					return
 				}
@@ -435,6 +436,9 @@ func (d *Device) startStreamLoop(ctx context.Context) error {
 				}
 			case <-ctx.Done():
 				d.stopStreamLoop()
+				for len(waitForRead) > 0 {
+					<-waitForRead
+				}
 				return
 			}
 		}
@@ -444,15 +448,22 @@ func (d *Device) startStreamLoop(ctx context.Context) error {
 }
 
 func (d *Device) stopStreamLoop() error {
-	if err := v4l2.StreamOff(d); err != nil {
+	if !d.streaming.Swap(false) {
+		return nil
+	}
 
+	if err := v4l2.StreamOff(d); err != nil {
 		if uerr := v4l2.UnmapMemoryBuffers(d); uerr != nil {
 			return fmt.Errorf("%w", uerr, err)
 		}
+
 		return err
 	}
+
 	if err := v4l2.UnmapMemoryBuffers(d); err != nil {
 		return err
 	}
+
+	d.cancelContext()
 	return nil
 }
