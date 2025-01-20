@@ -89,7 +89,7 @@ func send(fd, req, arg uintptr) error {
 // WaitForRead returns a channel that can be used to be notified when
 // a device's is ready to be read.
 func WaitForRead(dev Device) <-chan struct{} {
-	sigChan := make(chan struct{})
+	sigChan := make(chan struct{}, 1)
 
 	go func(fd uintptr) {
 		defer close(sigChan)
