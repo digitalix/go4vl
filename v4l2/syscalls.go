@@ -102,12 +102,11 @@ func WaitForRead(dev Device) <-chan struct{} {
 				continue
 			}
 
-			sigChan <- struct{}{}
-
 			if !dev.Streaming() {
 				return
 			}
-
+			
+			sigChan <- struct{}{}
 		}
 	}(dev.Fd())
 
